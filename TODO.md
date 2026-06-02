@@ -1,0 +1,2 @@
+- bash permission use parser / format
+- observational memory
