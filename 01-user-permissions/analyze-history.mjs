@@ -1,7 +1,126 @@
 #!/usr/bin/env node
-import { promises as fs } from "node:fs";import { dirname,join,resolve } from "node:path";import { homedir } from "node:os";import { commandInvocations,isSafeBash,parseBash,permanentBlock } from "./policy.ts";
-let sessions=join(homedir(),".pi/agent/sessions"),output,deniedOnly=false;for(let i=2;i<process.argv.length;i++){const a=process.argv[i];if(a==="--sessions")sessions=resolve(process.argv[++i]);else if(a==="--output")output=resolve(process.argv[++i]);else if(a==="--denied-only")deniedOnly=true;else{console.error(`Unknown option: ${a}`);process.exit(2)}}
-async function files(dir){let out=[];for(const e of await fs.readdir(dir,{withFileTypes:true}).catch(()=>[])){const p=join(dir,e.name);if(e.isDirectory())out.push(...await files(p));else if(e.isFile()&&p.endsWith(".jsonl"))out.push(p)}return out}
-const map=new Map(),all=await files(sessions);let malformed=0;for(const file of all){for(const line of (await fs.readFile(file,"utf8")).split("\n")){if(!line.trim())continue;let e;try{e=JSON.parse(line)}catch{malformed++;continue}const add=(command,source)=>{if(typeof command!=="string")return;const x=map.get(command)||{command,occurrences:0,assistant:0,user:0};x.occurrences++;x[source]++;map.set(command,x)};if(e.type==="message"&&e.message?.role==="bashExecution")add(e.message.command,"user");if(e.type==="message"&&e.message?.role==="assistant")for(const b of e.message.content||[])if(b.type==="toolCall"&&b.name==="bash")add(b.arguments?.command,"assistant")}}
-const executableFrequency={};let deniedOccurrences=0;for(const r of map.values()){const p=parseBash(r.command);const names=p?commandInvocations(p.root).map(x=>x.name):["<parse-error>"];for(const n of names)executableFrequency[n]=(executableFrequency[n]||0)+r.occurrences;let reason;if(p)reason=permanentBlock(p.root);if(!reason&&p){const set=new Set(names);if(set.has("grep"))reason="The user prefers that you use rg instead of grep.";else if(set.has("find"))reason="The user prefers that you use fd instead of find."}r.autoAllowed=!!p&&!reason&&isSafeBash(p.root);r.reason=reason||(r.autoAllowed?"auto-allowed":p?"permission required":"parse error");r.executables=names;if(!r.autoAllowed)deniedOccurrences+=r.occurrences}
-let commands=[...map.values()].filter(x=>!deniedOnly||!x.autoAllowed).sort((a,b)=>b.occurrences-a.occurrences||a.command.localeCompare(b.command));const report={generatedAt:new Date().toISOString(),sourceDirectory:sessions,fileCount:all.length,malformedLineCount:malformed,totals:{occurrences:[...map.values()].reduce((n,x)=>n+x.occurrences,0),unique:map.size,deniedOccurrences,deniedUnique:[...map.values()].filter(x=>!x.autoAllowed).length,selectedOccurrences:commands.reduce((n,x)=>n+x.occurrences,0),selectedUnique:commands.length},executableFrequency:Object.entries(executableFrequency).sort((a,b)=>b[1]-a[1]).map(([executable,occurrences])=>({executable,occurrences})),commands};const json=JSON.stringify(report,null,2)+"\n";if(output){await fs.mkdir(dirname(output),{recursive:true});await fs.writeFile(output,json,{mode:0o600});await fs.chmod(output,0o600)}else process.stdout.write(json);
+import { promises as fs } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { homedir } from "node:os";
+import {
+  commandInvocations,
+  isSafeBash,
+  parseBash,
+  permanentBlock,
+} from "./policy.ts";
+let sessions = join(homedir(), ".pi/agent/sessions"),
+  output,
+  deniedOnly = false;
+for (let i = 2; i < process.argv.length; i++) {
+  const a = process.argv[i];
+  if (a === "--sessions") sessions = resolve(process.argv[++i]);
+  else if (a === "--output") output = resolve(process.argv[++i]);
+  else if (a === "--denied-only") deniedOnly = true;
+  else {
+    console.error(`Unknown option: ${a}`);
+    process.exit(2);
+  }
+}
+async function files(dir) {
+  let out = [];
+  for (
+    const e of await fs.readdir(dir, { withFileTypes: true }).catch(() => [])
+  ) {
+    const p = join(dir, e.name);
+    if (e.isDirectory()) out.push(...await files(p));
+    else if (e.isFile() && p.endsWith(".jsonl")) out.push(p);
+  }
+  return out;
+}
+const map = new Map(), all = await files(sessions);
+let malformed = 0;
+for (const file of all) {
+  for (const line of (await fs.readFile(file, "utf8")).split("\n")) {
+    if (!line.trim()) {
+      continue;
+    }
+    let e;
+    try {
+      e = JSON.parse(line);
+    } catch {
+      malformed++;
+      continue;
+    }
+    const add = (command, source) => {
+      if (typeof command !== "string") return;
+      const x = map.get(command) ||
+        { command, occurrences: 0, assistant: 0, user: 0 };
+      x.occurrences++;
+      x[source]++;
+      map.set(command, x);
+    };
+    if (e.type === "message" && e.message?.role === "bashExecution") {
+      add(e.message.command, "user");
+    }
+    if (e.type === "message" && e.message?.role === "assistant") {
+      for (const b of e.message.content || []) {
+        if (b.type === "toolCall" && b.name === "bash") {
+          add(b.arguments?.command, "assistant");
+        }
+      }
+    }
+  }
+}
+const executableFrequency = {};
+let deniedOccurrences = 0;
+for (const r of map.values()) {
+  const p = parseBash(r.command);
+  const names = p
+    ? commandInvocations(p.root).map((x) => x.name)
+    : ["<parse-error>"];
+  for (const n of names) {
+    executableFrequency[n] = (executableFrequency[n] || 0) + r.occurrences;
+  }
+  let reason;
+  if (p) reason = permanentBlock(p.root);
+  if (!reason && p) {
+    const set = new Set(names);
+    if (set.has("grep")) {
+      reason = "The user prefers that you use rg instead of grep.";
+    } else if (set.has("find")) {
+      reason = "The user prefers that you use fd instead of find.";
+    }
+  }
+  r.autoAllowed = !!p && !reason && isSafeBash(p.root);
+  r.reason = reason ||
+    (r.autoAllowed
+      ? "auto-allowed"
+      : p
+      ? "permission required"
+      : "parse error");
+  r.executables = names;
+  if (!r.autoAllowed) deniedOccurrences += r.occurrences;
+}
+let commands = [...map.values()].filter((x) => !deniedOnly || !x.autoAllowed)
+  .sort((a, b) =>
+    b.occurrences - a.occurrences || a.command.localeCompare(b.command)
+  );
+const report = {
+  generatedAt: new Date().toISOString(),
+  sourceDirectory: sessions,
+  fileCount: all.length,
+  malformedLineCount: malformed,
+  totals: {
+    occurrences: [...map.values()].reduce((n, x) => n + x.occurrences, 0),
+    unique: map.size,
+    deniedOccurrences,
+    deniedUnique: [...map.values()].filter((x) => !x.autoAllowed).length,
+    selectedOccurrences: commands.reduce((n, x) => n + x.occurrences, 0),
+    selectedUnique: commands.length,
+  },
+  executableFrequency: Object.entries(executableFrequency).sort((a, b) =>
+    b[1] - a[1]
+  ).map(([executable, occurrences]) => ({ executable, occurrences })),
+  commands,
+};
+const json = JSON.stringify(report, null, 2) + "\n";
+if (output) {
+  await fs.mkdir(dirname(output), { recursive: true });
+  await fs.writeFile(output, json, { mode: 0o600 });
+  await fs.chmod(output, 0o600);
+} else process.stdout.write(json);

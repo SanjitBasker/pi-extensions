@@ -1,6 +1,83 @@
-import { readFileSync } from "node:fs";import { join } from "node:path";
-export type Config={observeAfterTokens:number;reflectAfterTokens:number;compactAfterTokens:number;observationsPoolMaxTokens:number;observationsPoolTargetTokens:number;agentMaxTurns:number;model?:{provider:string;id:string;thinking?:string};passive:boolean;debugLog:boolean};
-export const defaults:Config={observeAfterTokens:10_000,reflectAfterTokens:20_000,compactAfterTokens:81_000,observationsPoolMaxTokens:20_000,observationsPoolTargetTokens:10_000,agentMaxTurns:16,passive:true,debugLog:false};
-const nums=["observeAfterTokens","reflectAfterTokens","compactAfterTokens","observationsPoolMaxTokens","observationsPoolTargetTokens","agentMaxTurns"] as const;const thoughts=new Set("off minimal low medium high xhigh".split(" "));
-function merge(c:Config,x:any){let target=false;if(!x||typeof x!=="object")return target;for(const k of nums)if(Number.isFinite(x[k])&&Number.isInteger(x[k])&&x[k]>0){(c as any)[k]=x[k];if(k==="observationsPoolTargetTokens")target=true}for(const k of ["passive","debugLog"] as const)if(typeof x[k]==="boolean")c[k]=x[k];if(x.model&&typeof x.model.provider==="string"&&x.model.provider.trim()&&typeof x.model.id==="string"&&x.model.id.trim()){c.model={provider:x.model.provider.trim(),id:x.model.id.trim()};if(thoughts.has(x.model.thinking))c.model.thinking=x.model.thinking}return target}
-export function loadConfig(cwd:string,agentDir:string){const c={...defaults};let targetConfigured=false;for(const file of [join(agentDir,"settings.json"),join(cwd,".pi/settings.json")])try{targetConfigured=merge(c,JSON.parse(readFileSync(file,"utf8"))["observational-memory"])||targetConfigured}catch{}const env=process.env.PI_OBSERVATIONAL_MEMORY_PASSIVE?.toLowerCase();if(["1","true","yes","on"].includes(env||""))c.passive=true;if(["0","false","no","off"].includes(env||""))c.passive=false;if(!targetConfigured||!(c.observationsPoolTargetTokens<c.observationsPoolMaxTokens))c.observationsPoolTargetTokens=Math.floor(c.observationsPoolMaxTokens/2);return c}
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+export type Config = {
+  observeAfterTokens: number;
+  reflectAfterTokens: number;
+  compactAfterTokens: number;
+  observationsPoolMaxTokens: number;
+  observationsPoolTargetTokens: number;
+  agentMaxTurns: number;
+  model?: { provider: string; id: string; thinking?: string };
+  passive: boolean;
+  debugLog: boolean;
+};
+export const defaults: Config = {
+  observeAfterTokens: 10_000,
+  reflectAfterTokens: 20_000,
+  compactAfterTokens: 81_000,
+  observationsPoolMaxTokens: 20_000,
+  observationsPoolTargetTokens: 10_000,
+  agentMaxTurns: 16,
+  passive: true,
+  debugLog: false,
+};
+const nums = [
+  "observeAfterTokens",
+  "reflectAfterTokens",
+  "compactAfterTokens",
+  "observationsPoolMaxTokens",
+  "observationsPoolTargetTokens",
+  "agentMaxTurns",
+] as const;
+const thoughts = new Set("off minimal low medium high xhigh".split(" "));
+function merge(c: Config, x: any) {
+  let target = false;
+  if (!x || typeof x !== "object") return target;
+  for (const k of nums) {
+    if (Number.isFinite(x[k]) && Number.isInteger(x[k]) && x[k] > 0) {
+      (c as any)[k] = x[k];
+      if (k === "observationsPoolTargetTokens") target = true;
+    }
+  }
+  for (const k of ["passive", "debugLog"] as const) {
+    if (typeof x[k] === "boolean") c[k] = x[k];
+  }
+  if (
+    x.model && typeof x.model.provider === "string" &&
+    x.model.provider.trim() && typeof x.model.id === "string" &&
+    x.model.id.trim()
+  ) {
+    c.model = { provider: x.model.provider.trim(), id: x.model.id.trim() };
+    if (thoughts.has(x.model.thinking)) c.model.thinking = x.model.thinking;
+  }
+  return target;
+}
+export function loadConfig(cwd: string, agentDir: string) {
+  const c = { ...defaults };
+  let targetConfigured = false;
+  for (
+    const file of [
+      join(agentDir, "settings.json"),
+      join(cwd, ".pi/settings.json"),
+    ]
+  ) {
+    try {
+      targetConfigured = merge(
+        c,
+        JSON.parse(readFileSync(file, "utf8"))["observational-memory"],
+      ) || targetConfigured;
+    } catch {}
+  }
+  const env = process.env.PI_OBSERVATIONAL_MEMORY_PASSIVE?.toLowerCase();
+  if (["1", "true", "yes", "on"].includes(env || "")) c.passive = true;
+  if (["0", "false", "no", "off"].includes(env || "")) c.passive = false;
+  if (
+    !targetConfigured ||
+    !(c.observationsPoolTargetTokens < c.observationsPoolMaxTokens)
+  ) {
+    c.observationsPoolTargetTokens = Math.floor(
+      c.observationsPoolMaxTokens / 2,
+    );
+  }
+  return c;
+}

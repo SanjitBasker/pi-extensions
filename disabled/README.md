@@ -1,6 +1,7 @@
 # external-memory
 
-Loads sidecar `AGENTS.md` files from an external memory repository instead of from the project tree.
+Loads sidecar `AGENTS.md` files from an external memory repository instead of
+from the project tree.
 
 Config path:
 
@@ -20,7 +21,8 @@ directory = "/home/sanjit/git/my-project"
 project = "my-project"
 ```
 
-When pi is started under a configured `directory`, project paths are mapped into the configured `memory_root`.
+When pi is started under a configured `directory`, project paths are mapped into
+the configured `memory_root`.
 
 For example, reading:
 
@@ -38,7 +40,10 @@ will look for unsent memory files at:
 
 Behavior:
 
-- At the start of each turn, injects unsent memory for paths mentioned in the prompt and paths touched earlier in the session.
-- After successful `read` results, appends newly discovered memory to the tool result so the model can use it in the same turn.
+- At the start of each turn, injects unsent memory for paths mentioned in the
+  prompt and paths touched earlier in the session.
+- After successful `read` results, appends newly discovered memory to the tool
+  result so the model can use it in the same turn.
 - Records touched paths from `read`, `edit`, and `write`.
-- Deduplicates sent memory files for the whole session, persisted via custom session entries so `/reload` does not resend the same `AGENTS.md` files.
+- Deduplicates sent memory files for the whole session, persisted via custom
+  session entries so `/reload` does not resend the same `AGENTS.md` files.

@@ -1,28 +1,655 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";import { getAgentDir } from "@earendil-works/pi-coding-agent";import { appendFileSync,existsSync,mkdirSync,renameSync,statSync,unlinkSync } from "node:fs";import { dirname,join } from "node:path";
-import { loadConfig,type Config } from "./config.ts";import { compactionProjection,coverage,estimate,fold,isSource,memoryId,progress,renderSource,renderSummary,sourceTokens,truncateContent,validObservation,validReflection,type Observation,type Reflection } from "./core.ts";import { dropSchema,observationSchema,reflectionSchema,runMemoryAgent } from "./agents.ts";import { registerCommands } from "./commands.ts";import { registerRecall } from "./recall.ts";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+} from "node:fs";
+import { dirname, join } from "node:path";
+import { type Config, loadConfig } from "./config.ts";
+import {
+  compactionProjection,
+  coverage,
+  estimate,
+  fold,
+  isSource,
+  memoryId,
+  type Observation,
+  progress,
+  type Reflection,
+  renderSource,
+  renderSummary,
+  sourceTokens,
+  truncateContent,
+  validObservation,
+  validReflection,
+} from "./core.ts";
+import {
+  dropSchema,
+  observationSchema,
+  reflectionSchema,
+  runMemoryAgent,
+} from "./agents.ts";
+import { registerCommands } from "./commands.ts";
+import { registerRecall } from "./recall.ts";
 
-type Runtime={config?:Config;consolidating:boolean;phase?:string;promise?:Promise<void>;controller?:AbortController;autoTimer?:ReturnType<typeof setTimeout>;auth?:any;auto:boolean;hook:boolean;shutdown:boolean;notifiedModel:boolean;errors:Record<string,string|undefined>};
-const now=()=>{const d=new Date(),p=(x:number)=>String(x).padStart(2,"0");return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`};
-function resolveModel(ctx:any,c:Config){let model=ctx.model;if(c.model){const found=ctx.modelRegistry.find(c.model.provider,c.model.id);if(found)model=found;else if(ctx.hasUI)ctx.ui.notify(`Observational memory: configured model ${c.model.provider}/${c.model.id} not found, using session model`,"warning")}if(!model)throw new Error("no model available (session has no model and no observational-memory model configured)");return model}
-function notify(ctx:any,s:string,l:any="info"){if(ctx.hasUI)ctx.ui.notify(`Observational memory: ${s}`,l)}
-function earlier(branch:any[],a?:string,b?:string){const ix=new Map(branch.map((e,i)=>[e.id,i]));if(!a)return b;if(!b)return a;return (ix.get(a)??Infinity)<=(ix.get(b)??Infinity)?a:b}
-export function safeSessionId(value:any){const s=String(value??"").trim().replace(/[^A-Za-z0-9._-]+/g,"_").replace(/^_+|_+$/g,"").slice(0,128);return /[A-Za-z0-9]/.test(s)?s:""}
-function debug(c:Config,ctx:any,event:string,data:any={}){if(!c.debugLog)return;try{const id=safeSessionId(ctx.sessionManager.getSessionId?.()),file=id?join(getAgentDir(),"observational-memory/debug",`${id}.ndjson`):join(getAgentDir(),"observational-memory/debug.ndjson");mkdirSync(dirname(file),{recursive:true});if(existsSync(file)&&statSync(file).size>=10*1024*1024){const backup=file+".1";if(existsSync(backup))unlinkSync(backup);renameSync(file,backup)}appendFileSync(file,JSON.stringify({ts:new Date().toISOString(),event,cwd:ctx.cwd,sessionId:ctx.sessionManager.getSessionId?.(),sessionFile:ctx.sessionManager.getSessionFile?.(),data})+"\n")}catch{}}
-function sinceCompaction(branch:any[]){let i=-1,start=0;for(let j=branch.length-1;j>=0;j--)if(branch[j].type==="compaction"){i=j;break}if(i>=0){const kept=branch[i].firstKeptEntryId,ki=branch.findIndex(e=>e.id===kept);start=ki>=0?ki:i+1}return branch.slice(start).filter(isSource).reduce((n,e)=>n+sourceTokens(e),0)}
+type Runtime = {
+  config?: Config;
+  consolidating: boolean;
+  phase?: string;
+  promise?: Promise<void>;
+  controller?: AbortController;
+  autoTimer?: ReturnType<typeof setTimeout>;
+  auth?: any;
+  auto: boolean;
+  hook: boolean;
+  shutdown: boolean;
+  notifiedModel: boolean;
+  errors: Record<string, string | undefined>;
+};
+const now = () => {
+  const d = new Date(), p = (x: number) => String(x).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${
+    p(d.getHours())
+  }:${p(d.getMinutes())}`;
+};
+function resolveModel(ctx: any, c: Config) {
+  let model = ctx.model;
+  if (c.model) {
+    const found = ctx.modelRegistry.find(c.model.provider, c.model.id);
+    if (found) model = found;
+    else if (ctx.hasUI) {
+      ctx.ui.notify(
+        `Observational memory: configured model ${c.model.provider}/${c.model.id} not found, using session model`,
+        "warning",
+      );
+    }
+  }
+  if (!model) {
+    throw new Error(
+      "no model available (session has no model and no observational-memory model configured)",
+    );
+  }
+  return model;
+}
+function notify(ctx: any, s: string, l: any = "info") {
+  if (ctx.hasUI) ctx.ui.notify(`Observational memory: ${s}`, l);
+}
+function earlier(branch: any[], a?: string, b?: string) {
+  const ix = new Map(branch.map((e, i) => [e.id, i]));
+  if (!a) return b;
+  if (!b) return a;
+  return (ix.get(a) ?? Infinity) <= (ix.get(b) ?? Infinity) ? a : b;
+}
+export function safeSessionId(value: any) {
+  const s = String(value ?? "").trim().replace(/[^A-Za-z0-9._-]+/g, "_")
+    .replace(/^_+|_+$/g, "").slice(0, 128);
+  return /[A-Za-z0-9]/.test(s) ? s : "";
+}
+function debug(c: Config, ctx: any, event: string, data: any = {}) {
+  if (!c.debugLog) return;
+  try {
+    const id = safeSessionId(ctx.sessionManager.getSessionId?.()),
+      file = id
+        ? join(getAgentDir(), "observational-memory/debug", `${id}.ndjson`)
+        : join(getAgentDir(), "observational-memory/debug.ndjson");
+    mkdirSync(dirname(file), { recursive: true });
+    if (existsSync(file) && statSync(file).size >= 10 * 1024 * 1024) {
+      const backup = file + ".1";
+      if (existsSync(backup)) unlinkSync(backup);
+      renameSync(file, backup);
+    }
+    appendFileSync(
+      file,
+      JSON.stringify({
+        ts: new Date().toISOString(),
+        event,
+        cwd: ctx.cwd,
+        sessionId: ctx.sessionManager.getSessionId?.(),
+        sessionFile: ctx.sessionManager.getSessionFile?.(),
+        data,
+      }) + "\n",
+    );
+  } catch {}
+}
+function sinceCompaction(branch: any[]) {
+  let i = -1, start = 0;
+  for (let j = branch.length - 1; j >= 0; j--) {
+    if (branch[j].type === "compaction") {
+      i = j;
+      break;
+    }
+  }
+  if (i >= 0) {
+    const kept = branch[i].firstKeptEntryId,
+      ki = branch.findIndex((e) => e.id === kept);
+    start = ki >= 0 ? ki : i + 1;
+  }
+  return branch.slice(start).filter(isSource).reduce(
+    (n, e) => n + sourceTokens(e),
+    0,
+  );
+}
 
-export default function(pi:ExtensionAPI){const state:Runtime={consolidating:false,auto:false,hook:false,shutdown:false,notifiedModel:false,errors:{}};const config=(ctx:any)=>state.config??=(loadConfig(ctx.cwd,getAgentDir()));
- async function observer(ctx:any,c:Config,model:any,signal:AbortSignal){const branch=ctx.sessionManager.getBranch();if(progress(branch,"om.observations.recorded")<c.observeAfterTokens)return false;state.phase="observer";const cov=coverage(branch,"om.observations.recorded");const chunk=branch.slice(cov.index+1).filter(isSource);const last=chunk.at(-1);if(!last)return false;const allowed=new Map<string,number>(chunk.map((e:any,i:number)=>[e.id,i]));const existing=fold(branch);const accepted:Observation[]=[];const seen=new Set<string>();notify(ctx,`observer running on approximately ${chunk.reduce((n,e)=>n+sourceTokens(e),0).toLocaleString()} tokens`);
- const tool:any={name:"record_observations",label:"Record observations",description:"Record new source-supported observations.",parameters:observationSchema,execute:async(_id:string,p:any)=>{let rejected=0,duplicates=0;for(const x of p.observations||[]){if(!Array.isArray(x.sourceEntryIds)||x.sourceEntryIds.some((id:any)=>!allowed.has(id))){rejected++;continue}const content=truncateContent(String(x.content||""));if(!content){rejected++;continue}const ids=[...new Set<string>(x.sourceEntryIds)].sort((a,b)=>allowed.get(a)!-allowed.get(b)!);const o:any={id:memoryId(content),content,timestamp:String(x.timestamp||now()),relevance:x.relevance,sourceEntryIds:ids,tokenCount:estimate(content)};if(!validObservation(o)){rejected++;continue}if(seen.has(o.id)){duplicates++;continue}seen.add(o.id);accepted.push(o)}return {content:[{type:"text",text:`added ${accepted.length}; duplicate ${duplicates}; rejected ${rejected}`}],details:{}}}};
- const memory=`Reflections:\n${existing.reflections.map(x=>`[${x.id}] ${x.content}`).join("\n")||"(none)"}\nObservations:\n${existing.activeObservations.map(x=>`[${x.id}] ${x.content}`).join("\n")||"(none)"}`;const source=chunk.map(e=>`[Source entry id: ${e.id}]\n${renderSource(e)}`).filter(x=>x.trim()).join("\n\n");await runMemoryAgent({ctx,model,auth:state.auth,thinking:c.model?.thinking||"low",maxTurns:c.agentMaxTurns,system:"You are an observational memory agent. Record only new, source-supported one-line facts. Preserve exact identifiers, paths, errors, quantities, decisions, rationale, constraints and completion state. Split independent facts, group routine operations, reserve critical for facts whose loss causes harm, and cite the smallest exact displayed source IDs. You may record zero observations. Call record_observations until complete, then briefly confirm.",prompt:`Current time: ${now()}\n\n${memory}\n\nNew source:\n${source}`,tool,signal});signal.throwIfAborted();if(!accepted.length){notify(ctx,"observer returned no observations","warning");return false}pi.appendEntry("om.observations.recorded",{observations:accepted,coversUpToId:last.id});notify(ctx,`recorded ${accepted.length} observation${accepted.length===1?"":"s"}`);return true}
- async function reflector(ctx:any,c:Config,model:any,signal:AbortSignal){const branch=ctx.sessionManager.getBranch();if(progress(branch,"om.reflections.recorded")<c.reflectAfterTokens)return;const oc=coverage(branch,"om.observations.recorded");if(!oc.id)return;state.phase="reflector";const mem=fold(branch),order=new Map(mem.activeObservations.map((x,i)=>[x.id,i])),accepted:Reflection[]=[];const used=new Set(mem.reflections.map(x=>x.id));notify(ctx,"reflector running");const counts=new Map<string,number>();for(const r of mem.reflections)for(const id of r.supportingObservationIds)counts.set(id,(counts.get(id)||0)+1);
- const tool:any={name:"record_reflections",label:"Record reflections",description:"Record scarce durable reflections.",parameters:reflectionSchema,execute:async(_id:string,p:any)=>{for(const x of p.reflections||[]){const content=truncateContent(String(x.content||""));if(!content||/[\r\n]/.test(content)||!Array.isArray(x.supportingObservationIds)||!x.supportingObservationIds.length||x.supportingObservationIds.some((id:any)=>!order.has(id)))continue;const support=[...new Set<string>(x.supportingObservationIds)].sort((a,b)=>order.get(a)!-order.get(b)!);const r:any={id:memoryId(content),content,supportingObservationIds:support,tokenCount:estimate(content)};if(validReflection(r)&&!used.has(r.id)){used.add(r.id);accepted.push(r)}}return {content:[{type:"text",text:`accepted ${accepted.length}`}],details:{}}}};const obs=mem.activeObservations.map(x=>`[${x.id}] ${x.timestamp} [${x.relevance}] [coverage: ${(counts.get(x.id)||0)>=2?"strong":counts.get(x.id)?"partial":"none"}] ${x.content}`).join("\n");await runMemoryAgent({ctx,model,auth:state.auth,thinking:c.model?.thinking||"low",maxTurns:c.agentMaxTurns,system:"Create only scarce durable orientation anchors supported by active observations. Prioritize stable preferences, constraints, corrections, architecture rationale, decisions, invariants, completed outcomes, goals and long-lived blockers. Reject transient work, routine commands and partial work. Do not restate existing reflections. Content must be single-line plain prose. Include every observation whose durable meaning is preserved, without inflating support. Zero is preferable to weak reflections.",prompt:`Existing reflections:\n${mem.reflections.map(x=>`[${x.id}] ${x.content}`).join("\n")||"(none)"}\n\nActive observations:\n${obs}`,tool,signal});signal.throwIfAborted();if(!accepted.length)return;pi.appendEntry("om.reflections.recorded",{reflections:accepted,coversUpToId:oc.id});notify(ctx,`recorded ${accepted.length} reflection${accepted.length===1?"":"s"}`);await dropper(ctx,c,model,accepted,oc.id,signal)}
- async function dropper(ctx:any,c:Config,model:any,same:Reflection[],reflectionCoverage:string,signal:AbortSignal){const branch=ctx.sessionManager.getBranch(),mem=fold(branch);const tokens=mem.activeObservations.reduce((n,x)=>n+x.tokenCount,0),over=Math.max(0,tokens-c.observationsPoolTargetTokens);if(!over||!mem.activeObservations.length)return;state.phase="dropper";const avg=tokens/mem.activeObservations.length,max=Math.min(mem.activeObservations.length,Math.max(1,Math.ceil(over/avg)));notify(ctx,`active observation pool ${tokens.toLocaleString()} tokens; target ${c.observationsPoolTargetTokens.toLocaleString()} (${(tokens/c.observationsPoolTargetTokens).toFixed(2)}×)`);const active=new Map(mem.activeObservations.map(x=>[x.id,x])),proposed:string[]=[];
- const tool:any={name:"drop_observations",label:"Drop observations",description:`Propose at most ${max} redundant observation IDs.`,parameters:dropSchema,execute:async(_id:string,p:any)=>{for(const id of p.ids||[])if(active.has(id)&&!proposed.includes(id))proposed.push(id);return {content:[{type:"text",text:`collected ${proposed.length} candidates`}],details:{}}}};const refs=[...mem.reflections,...same.filter(x=>!mem.reflections.some(y=>y.id===x.id))];await runMemoryAgent({ctx,model,auth:state.auth,thinking:c.model?.thinking||"low",maxTurns:c.agentMaxTurns,system:`Select safe observations to drop; default to keep. Maximum ${max}, an upper bound not a quota. Prefer meaning captured with equivalent fidelity by reflections, then superseded, repetitive low-signal, and old covered facts. Preserve unique user facts, corrections, completions, identifiers, paths, commands, errors, rationale, dates, blockers, TODOs and recent/high/critical context.`,prompt:`Reflections:\n${refs.map(x=>`[${x.id}] ${x.content} (supports ${x.supportingObservationIds.join(", ")})`).join("\n")}\n\nActive observations:\n${mem.activeObservations.map(x=>`[${x.id}] ${x.timestamp} [${x.relevance}] ${x.content}`).join("\n")}`,tool,signal});signal.throwIfAborted();const support=new Map<string,number>();for(const r of refs)for(const id of r.supportingObservationIds)support.set(id,(support.get(id)||0)+1);const rv:any={low:0,medium:1,high:2,critical:3};proposed.sort((a,b)=>Math.min(2,support.get(b)||0)-Math.min(2,support.get(a)||0)||rv[active.get(a)!.relevance]-rv[active.get(b)!.relevance]||((Number.isFinite(Date.parse(active.get(a)!.timestamp))?Date.parse(active.get(a)!.timestamp):Infinity)-(Number.isFinite(Date.parse(active.get(b)!.timestamp))?Date.parse(active.get(b)!.timestamp):Infinity)));const ids=proposed.slice(0,max);if(ids.length)pi.appendEntry("om.observations.dropped",{observationIds:ids,coversUpToId:earlier(branch,coverage(branch,"om.observations.recorded").id,reflectionCoverage)!})}
- function launch(ctx:any){const c=config(ctx);if(c.passive||state.consolidating||state.shutdown)return;const branch=ctx.sessionManager.getBranch();const observationDue=progress(branch,"om.observations.recorded")>=c.observeAfterTokens,reflectionDue=progress(branch,"om.reflections.recorded")>=c.reflectAfterTokens;if(!observationDue&&!reflectionDue)return;const firstStage=observationDue?"observer":"reflector";state.consolidating=true;state.errors={};const controller=new AbortController();const signal=controller.signal;state.controller=controller;debug(c,ctx,"pipeline.start",{observationProgress:progress(branch,"om.observations.recorded"),reflectionProgress:progress(branch,"om.reflections.recorded")});const task=(async()=>{let model;try{model=resolveModel(ctx,c);state.auth=await ctx.modelRegistry.getApiKeyAndHeaders(model);if(!state.auth.ok)throw new Error(state.auth.error||`no API key for provider "${model.provider}"`);if(!state.auth.apiKey)throw new Error(`no API key for provider "${model.provider}"`);state.notifiedModel=false}catch(e:any){if(!signal.aborted&&!state.notifiedModel){notify(ctx,`${firstStage} skipped: ${e.message}`,"warning");state.notifiedModel=true}return}try{await observer(ctx,c,model,signal)}catch(e:any){if(signal.aborted)return;state.errors.observer=e.message||String(e);notify(ctx,state.errors.observer!,"warning");return}try{await reflector(ctx,c,model,signal)}catch(e:any){if(signal.aborted)return;state.errors[state.phase||"reflector"]=e.message||String(e);notify(ctx,state.errors[state.phase||"reflector"]!,"warning")}})().finally(()=>{state.consolidating=false;state.phase=undefined;if(state.promise===task)state.promise=undefined;if(state.controller===controller)state.controller=undefined;state.auth=undefined;debug(c,ctx,"pipeline.end",{errors:state.errors})});state.promise=task}
- pi.on("agent_start",(_e,ctx)=>launch(ctx));pi.on("turn_end",(_e,ctx)=>launch(ctx));
- pi.on("session_shutdown",async()=>{state.shutdown=true;state.controller?.abort();if(state.autoTimer){clearTimeout(state.autoTimer);state.autoTimer=undefined}state.auto=false;try{await state.promise}catch{}});
- pi.on("session_before_compact",async(e:any,ctx:any)=>{if(state.hook){notify(ctx,"another compaction is already in progress; cancelling duplicate","warning");return {cancel:true}}state.hook=true;try{const c=config(ctx),p=compactionProjection(e.branchEntries,e.preparation.firstKeptEntryId,c.observationsPoolMaxTokens>0?c.observationsPoolMaxTokens:20_000);return {compaction:{summary:renderSummary(p),firstKeptEntryId:e.preparation.firstKeptEntryId,tokensBefore:e.preparation.tokensBefore,details:{type:"om.folded",version:1,fullFold:p.fullFold,observations:p.observations,reflections:p.reflections}}}}finally{state.hook=false}});
- pi.on("agent_end",(e:any,ctx:any)=>{const c=config(ctx);if(c.passive||state.auto||state.shutdown)return;const last=[...e.messages].reverse().find((m:any)=>m.role==="assistant");if(last?.stopReason==="error"&&/(overload|server|provider|rate.?limit|429|50[0234]|network|connection|socket|websocket|reset|fetch|timeout|terminated|retry)/i.test(last.errorMessage||""))return;if(sinceCompaction(ctx.sessionManager.getBranch())<c.compactAfterTokens)return;state.auto=true;notify(ctx,"compaction threshold reached");const ui=ctx.ui;state.autoTimer=setTimeout(()=>{state.autoTimer=undefined;if(state.shutdown){state.auto=false;return}if(!ctx.isIdle()){state.auto=false;if(ctx.hasUI)ui.notify("Observational memory: compaction deferred because the agent became busy","info");return}if(sinceCompaction(ctx.sessionManager.getBranch())<c.compactAfterTokens){state.auto=false;if(ctx.hasUI)ui.notify("Observational memory: another compaction already ran","info");return}try{ctx.compact({onComplete:()=>{state.auto=false;if(ctx.hasUI)ui.notify("Observational memory: compaction complete","info")},onError:(x:any)=>{state.auto=false;if(x?.message!=="Compaction cancelled"&&ctx.hasUI)ui.notify(`Observational memory: compaction failed: ${x?.message||x}`,"error")}})}catch(x:any){state.auto=false;if(ctx.hasUI)ui.notify(`Observational memory: compaction failed: ${x.message||x}`,"error")}},0)});
- registerCommands(pi,state,config,notify,sinceCompaction);
- registerRecall(pi);
+export default function (pi: ExtensionAPI) {
+  const state: Runtime = {
+    consolidating: false,
+    auto: false,
+    hook: false,
+    shutdown: false,
+    notifiedModel: false,
+    errors: {},
+  };
+  const config = (ctx: any) =>
+    state.config ??= loadConfig(ctx.cwd, getAgentDir());
+  async function observer(
+    ctx: any,
+    c: Config,
+    model: any,
+    signal: AbortSignal,
+  ) {
+    const branch = ctx.sessionManager.getBranch();
+    if (progress(branch, "om.observations.recorded") < c.observeAfterTokens) {
+      return false;
+    }
+    state.phase = "observer";
+    const cov = coverage(branch, "om.observations.recorded");
+    const chunk = branch.slice(cov.index + 1).filter(isSource);
+    const last = chunk.at(-1);
+    if (!last) return false;
+    const allowed = new Map<string, number>(
+      chunk.map((e: any, i: number) => [e.id, i]),
+    );
+    const existing = fold(branch);
+    const accepted: Observation[] = [];
+    const seen = new Set<string>();
+    notify(
+      ctx,
+      `observer running on approximately ${
+        chunk.reduce((n, e) => n + sourceTokens(e), 0).toLocaleString()
+      } tokens`,
+    );
+    const tool: any = {
+      name: "record_observations",
+      label: "Record observations",
+      description: "Record new source-supported observations.",
+      parameters: observationSchema,
+      execute: async (_id: string, p: any) => {
+        let rejected = 0, duplicates = 0;
+        for (const x of p.observations || []) {
+          if (
+            !Array.isArray(x.sourceEntryIds) ||
+            x.sourceEntryIds.some((id: any) => !allowed.has(id))
+          ) {
+            rejected++;
+            continue;
+          }
+          const content = truncateContent(String(x.content || ""));
+          if (!content) {
+            rejected++;
+            continue;
+          }
+          const ids = [...new Set<string>(x.sourceEntryIds)].sort((a, b) =>
+            allowed.get(a)! - allowed.get(b)!
+          );
+          const o: any = {
+            id: memoryId(content),
+            content,
+            timestamp: String(x.timestamp || now()),
+            relevance: x.relevance,
+            sourceEntryIds: ids,
+            tokenCount: estimate(content),
+          };
+          if (!validObservation(o)) {
+            rejected++;
+            continue;
+          }
+          if (seen.has(o.id)) {
+            duplicates++;
+            continue;
+          }
+          seen.add(o.id);
+          accepted.push(o);
+        }
+        return {
+          content: [{
+            type: "text",
+            text:
+              `added ${accepted.length}; duplicate ${duplicates}; rejected ${rejected}`,
+          }],
+          details: {},
+        };
+      },
+    };
+    const memory = `Reflections:\n${
+      existing.reflections.map((x) => `[${x.id}] ${x.content}`).join("\n") ||
+      "(none)"
+    }\nObservations:\n${
+      existing.activeObservations.map((x) => `[${x.id}] ${x.content}`).join(
+        "\n",
+      ) || "(none)"
+    }`;
+    const source = chunk.map((e) =>
+      `[Source entry id: ${e.id}]\n${renderSource(e)}`
+    ).filter((x) => x.trim()).join("\n\n");
+    await runMemoryAgent({
+      ctx,
+      model,
+      auth: state.auth,
+      thinking: c.model?.thinking || "low",
+      maxTurns: c.agentMaxTurns,
+      system:
+        "You are an observational memory agent. Record only new, source-supported one-line facts. Preserve exact identifiers, paths, errors, quantities, decisions, rationale, constraints and completion state. Split independent facts, group routine operations, reserve critical for facts whose loss causes harm, and cite the smallest exact displayed source IDs. You may record zero observations. Call record_observations until complete, then briefly confirm.",
+      prompt: `Current time: ${now()}\n\n${memory}\n\nNew source:\n${source}`,
+      tool,
+      signal,
+    });
+    signal.throwIfAborted();
+    if (!accepted.length) {
+      notify(ctx, "observer returned no observations", "warning");
+      return false;
+    }
+    pi.appendEntry("om.observations.recorded", {
+      observations: accepted,
+      coversUpToId: last.id,
+    });
+    notify(
+      ctx,
+      `recorded ${accepted.length} observation${
+        accepted.length === 1 ? "" : "s"
+      }`,
+    );
+    return true;
+  }
+  async function reflector(
+    ctx: any,
+    c: Config,
+    model: any,
+    signal: AbortSignal,
+  ) {
+    const branch = ctx.sessionManager.getBranch();
+    if (progress(branch, "om.reflections.recorded") < c.reflectAfterTokens) {
+      return;
+    }
+    const oc = coverage(branch, "om.observations.recorded");
+    if (!oc.id) return;
+    state.phase = "reflector";
+    const mem = fold(branch),
+      order = new Map(mem.activeObservations.map((x, i) => [x.id, i])),
+      accepted: Reflection[] = [];
+    const used = new Set(mem.reflections.map((x) => x.id));
+    notify(ctx, "reflector running");
+    const counts = new Map<string, number>();
+    for (const r of mem.reflections) {
+      for (const id of r.supportingObservationIds) {
+        counts.set(id, (counts.get(id) || 0) + 1);
+      }
+    }
+    const tool: any = {
+      name: "record_reflections",
+      label: "Record reflections",
+      description: "Record scarce durable reflections.",
+      parameters: reflectionSchema,
+      execute: async (_id: string, p: any) => {
+        for (const x of p.reflections || []) {
+          const content = truncateContent(String(x.content || ""));
+          if (
+            !content || /[\r\n]/.test(content) ||
+            !Array.isArray(x.supportingObservationIds) ||
+            !x.supportingObservationIds.length ||
+            x.supportingObservationIds.some((id: any) => !order.has(id))
+          ) continue;
+          const support = [...new Set<string>(x.supportingObservationIds)].sort(
+            (a, b) => order.get(a)! - order.get(b)!,
+          );
+          const r: any = {
+            id: memoryId(content),
+            content,
+            supportingObservationIds: support,
+            tokenCount: estimate(content),
+          };
+          if (validReflection(r) && !used.has(r.id)) {
+            used.add(r.id);
+            accepted.push(r);
+          }
+        }
+        return {
+          content: [{ type: "text", text: `accepted ${accepted.length}` }],
+          details: {},
+        };
+      },
+    };
+    const obs = mem.activeObservations.map((x) =>
+      `[${x.id}] ${x.timestamp} [${x.relevance}] [coverage: ${
+        (counts.get(x.id) || 0) >= 2
+          ? "strong"
+          : counts.get(x.id)
+          ? "partial"
+          : "none"
+      }] ${x.content}`
+    ).join("\n");
+    await runMemoryAgent({
+      ctx,
+      model,
+      auth: state.auth,
+      thinking: c.model?.thinking || "low",
+      maxTurns: c.agentMaxTurns,
+      system:
+        "Create only scarce durable orientation anchors supported by active observations. Prioritize stable preferences, constraints, corrections, architecture rationale, decisions, invariants, completed outcomes, goals and long-lived blockers. Reject transient work, routine commands and partial work. Do not restate existing reflections. Content must be single-line plain prose. Include every observation whose durable meaning is preserved, without inflating support. Zero is preferable to weak reflections.",
+      prompt: `Existing reflections:\n${
+        mem.reflections.map((x) => `[${x.id}] ${x.content}`).join("\n") ||
+        "(none)"
+      }\n\nActive observations:\n${obs}`,
+      tool,
+      signal,
+    });
+    signal.throwIfAborted();
+    if (!accepted.length) return;
+    pi.appendEntry("om.reflections.recorded", {
+      reflections: accepted,
+      coversUpToId: oc.id,
+    });
+    notify(
+      ctx,
+      `recorded ${accepted.length} reflection${
+        accepted.length === 1 ? "" : "s"
+      }`,
+    );
+    await dropper(ctx, c, model, accepted, oc.id, signal);
+  }
+  async function dropper(
+    ctx: any,
+    c: Config,
+    model: any,
+    same: Reflection[],
+    reflectionCoverage: string,
+    signal: AbortSignal,
+  ) {
+    const branch = ctx.sessionManager.getBranch(), mem = fold(branch);
+    const tokens = mem.activeObservations.reduce((n, x) => n + x.tokenCount, 0),
+      over = Math.max(0, tokens - c.observationsPoolTargetTokens);
+    if (!over || !mem.activeObservations.length) return;
+    state.phase = "dropper";
+    const avg = tokens / mem.activeObservations.length,
+      max = Math.min(
+        mem.activeObservations.length,
+        Math.max(1, Math.ceil(over / avg)),
+      );
+    notify(
+      ctx,
+      `active observation pool ${tokens.toLocaleString()} tokens; target ${c.observationsPoolTargetTokens.toLocaleString()} (${
+        (tokens / c.observationsPoolTargetTokens).toFixed(2)
+      }×)`,
+    );
+    const active = new Map(mem.activeObservations.map((x) => [x.id, x])),
+      proposed: string[] = [];
+    const tool: any = {
+      name: "drop_observations",
+      label: "Drop observations",
+      description: `Propose at most ${max} redundant observation IDs.`,
+      parameters: dropSchema,
+      execute: async (_id: string, p: any) => {
+        for (const id of p.ids || []) {
+          if (active.has(id) && !proposed.includes(id)) proposed.push(id);
+        }
+        return {
+          content: [{
+            type: "text",
+            text: `collected ${proposed.length} candidates`,
+          }],
+          details: {},
+        };
+      },
+    };
+    const refs = [
+      ...mem.reflections,
+      ...same.filter((x) => !mem.reflections.some((y) => y.id === x.id)),
+    ];
+    await runMemoryAgent({
+      ctx,
+      model,
+      auth: state.auth,
+      thinking: c.model?.thinking || "low",
+      maxTurns: c.agentMaxTurns,
+      system:
+        `Select safe observations to drop; default to keep. Maximum ${max}, an upper bound not a quota. Prefer meaning captured with equivalent fidelity by reflections, then superseded, repetitive low-signal, and old covered facts. Preserve unique user facts, corrections, completions, identifiers, paths, commands, errors, rationale, dates, blockers, TODOs and recent/high/critical context.`,
+      prompt: `Reflections:\n${
+        refs.map((x) =>
+          `[${x.id}] ${x.content} (supports ${
+            x.supportingObservationIds.join(", ")
+          })`
+        ).join("\n")
+      }\n\nActive observations:\n${
+        mem.activeObservations.map((x) =>
+          `[${x.id}] ${x.timestamp} [${x.relevance}] ${x.content}`
+        ).join("\n")
+      }`,
+      tool,
+      signal,
+    });
+    signal.throwIfAborted();
+    const support = new Map<string, number>();
+    for (const r of refs) {
+      for (const id of r.supportingObservationIds) {
+        support.set(id, (support.get(id) || 0) + 1);
+      }
+    }
+    const rv: any = { low: 0, medium: 1, high: 2, critical: 3 };
+    proposed.sort((a, b) =>
+      Math.min(2, support.get(b) || 0) - Math.min(2, support.get(a) || 0) ||
+      rv[active.get(a)!.relevance] - rv[active.get(b)!.relevance] ||
+      ((Number.isFinite(Date.parse(active.get(a)!.timestamp))
+        ? Date.parse(active.get(a)!.timestamp)
+        : Infinity) -
+        (Number.isFinite(Date.parse(active.get(b)!.timestamp))
+          ? Date.parse(active.get(b)!.timestamp)
+          : Infinity))
+    );
+    const ids = proposed.slice(0, max);
+    if (ids.length) {
+      pi.appendEntry("om.observations.dropped", {
+        observationIds: ids,
+        coversUpToId: earlier(
+          branch,
+          coverage(branch, "om.observations.recorded").id,
+          reflectionCoverage,
+        )!,
+      });
+    }
+  }
+  function launch(ctx: any) {
+    const c = config(ctx);
+    if (c.passive || state.consolidating || state.shutdown) return;
+    const branch = ctx.sessionManager.getBranch();
+    const observationDue =
+        progress(branch, "om.observations.recorded") >= c.observeAfterTokens,
+      reflectionDue =
+        progress(branch, "om.reflections.recorded") >= c.reflectAfterTokens;
+    if (!observationDue && !reflectionDue) return;
+    const firstStage = observationDue ? "observer" : "reflector";
+    state.consolidating = true;
+    state.errors = {};
+    const controller = new AbortController();
+    const signal = controller.signal;
+    state.controller = controller;
+    debug(c, ctx, "pipeline.start", {
+      observationProgress: progress(branch, "om.observations.recorded"),
+      reflectionProgress: progress(branch, "om.reflections.recorded"),
+    });
+    const task = (async () => {
+      let model;
+      try {
+        model = resolveModel(ctx, c);
+        state.auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
+        if (!state.auth.ok) {
+          throw new Error(
+            state.auth.error || `no API key for provider "${model.provider}"`,
+          );
+        }
+        if (!state.auth.apiKey) {
+          throw new Error(`no API key for provider "${model.provider}"`);
+        }
+        state.notifiedModel = false;
+      } catch (e: any) {
+        if (!signal.aborted && !state.notifiedModel) {
+          notify(ctx, `${firstStage} skipped: ${e.message}`, "warning");
+          state.notifiedModel = true;
+        }
+        return;
+      }
+      try {
+        await observer(ctx, c, model, signal);
+      } catch (e: any) {
+        if (signal.aborted) return;
+        state.errors.observer = e.message || String(e);
+        notify(ctx, state.errors.observer!, "warning");
+        return;
+      }
+      try {
+        await reflector(ctx, c, model, signal);
+      } catch (e: any) {
+        if (signal.aborted) return;
+        state.errors[state.phase || "reflector"] = e.message || String(e);
+        notify(ctx, state.errors[state.phase || "reflector"]!, "warning");
+      }
+    })().finally(() => {
+      state.consolidating = false;
+      state.phase = undefined;
+      if (state.promise === task) state.promise = undefined;
+      if (state.controller === controller) state.controller = undefined;
+      state.auth = undefined;
+      debug(c, ctx, "pipeline.end", { errors: state.errors });
+    });
+    state.promise = task;
+  }
+  pi.on("agent_start", (_e, ctx) => launch(ctx));
+  pi.on("turn_end", (_e, ctx) => launch(ctx));
+  pi.on("session_shutdown", async () => {
+    state.shutdown = true;
+    state.controller?.abort();
+    if (state.autoTimer) {
+      clearTimeout(state.autoTimer);
+      state.autoTimer = undefined;
+    }
+    state.auto = false;
+    try {
+      await state.promise;
+    } catch {}
+  });
+  pi.on("session_before_compact", async (e: any, ctx: any) => {
+    if (state.hook) {
+      notify(
+        ctx,
+        "another compaction is already in progress; cancelling duplicate",
+        "warning",
+      );
+      return { cancel: true };
+    }
+    state.hook = true;
+    try {
+      const c = config(ctx),
+        p = compactionProjection(
+          e.branchEntries,
+          e.preparation.firstKeptEntryId,
+          c.observationsPoolMaxTokens > 0
+            ? c.observationsPoolMaxTokens
+            : 20_000,
+        );
+      return {
+        compaction: {
+          summary: renderSummary(p),
+          firstKeptEntryId: e.preparation.firstKeptEntryId,
+          tokensBefore: e.preparation.tokensBefore,
+          details: {
+            type: "om.folded",
+            version: 1,
+            fullFold: p.fullFold,
+            observations: p.observations,
+            reflections: p.reflections,
+          },
+        },
+      };
+    } finally {
+      state.hook = false;
+    }
+  });
+  pi.on("agent_end", (e: any, ctx: any) => {
+    const c = config(ctx);
+    if (c.passive || state.auto || state.shutdown) return;
+    const last = [...e.messages].reverse().find((m: any) =>
+      m.role === "assistant"
+    );
+    if (
+      last?.stopReason === "error" &&
+      /(overload|server|provider|rate.?limit|429|50[0234]|network|connection|socket|websocket|reset|fetch|timeout|terminated|retry)/i
+        .test(last.errorMessage || "")
+    ) return;
+    if (
+      sinceCompaction(ctx.sessionManager.getBranch()) < c.compactAfterTokens
+    ) return;
+    state.auto = true;
+    notify(ctx, "compaction threshold reached");
+    const ui = ctx.ui;
+    state.autoTimer = setTimeout(() => {
+      state.autoTimer = undefined;
+      if (state.shutdown) {
+        state.auto = false;
+        return;
+      }
+      if (!ctx.isIdle()) {
+        state.auto = false;
+        if (ctx.hasUI) {
+          ui.notify(
+            "Observational memory: compaction deferred because the agent became busy",
+            "info",
+          );
+        }
+        return;
+      }
+      if (
+        sinceCompaction(ctx.sessionManager.getBranch()) < c.compactAfterTokens
+      ) {
+        state.auto = false;
+        if (ctx.hasUI) {
+          ui.notify(
+            "Observational memory: another compaction already ran",
+            "info",
+          );
+        }
+        return;
+      }
+      try {
+        ctx.compact({
+          onComplete: () => {
+            state.auto = false;
+            if (ctx.hasUI) {
+              ui.notify("Observational memory: compaction complete", "info");
+            }
+          },
+          onError: (x: any) => {
+            state.auto = false;
+            if (x?.message !== "Compaction cancelled" && ctx.hasUI) {
+              ui.notify(
+                `Observational memory: compaction failed: ${x?.message || x}`,
+                "error",
+              );
+            }
+          },
+        });
+      } catch (x: any) {
+        state.auto = false;
+        if (ctx.hasUI) {
+          ui.notify(
+            `Observational memory: compaction failed: ${x.message || x}`,
+            "error",
+          );
+        }
+      }
+    }, 0);
+  });
+  registerCommands(pi, state, config, notify, sinceCompaction);
+  registerRecall(pi);
 }
