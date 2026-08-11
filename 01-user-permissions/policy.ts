@@ -71,6 +71,7 @@ function reviewed(name: string, values: string[]): boolean {
   if (name === "git") {
     let i=0; while(i<values.length&&values[i].startsWith("-")){if(values[i]==="-C"&&values[i+1])i+=2;else if(["--no-pager","--literal-pathspecs"].includes(values[i]))i++;else return false}
     const sub=values[i++]; const rest=values.slice(i); if(sub==="branch")return rest.length===1&&rest[0]==="--show-current";
+    if(sub==="remote")return rest.length===1&&rest[0]==="-v";
     if(["ls-files","ls-tree","merge-base","rev-parse"].includes(sub))return true;
     return ["status","diff","log","show"].includes(sub) && !rest.some(a=>["--output","--ext-diff","--textconv"].some(x=>hasEq(a,x)));
   }
