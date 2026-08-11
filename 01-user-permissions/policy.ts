@@ -28,6 +28,7 @@ function literalArg(n: Node): string | undefined {
   if ((n.type === "word" || n.type === "number") && n.namedChildCount === 0) return n.text.replace(/\\(.)/g, "$1");
   if (n.type === "raw_string" && n.namedChildCount === 0) return n.text.slice(1, -1);
   if (n.type === "string" && n.namedChildren.every(c => c.type === "string_content")) return n.text.slice(1, -1).replace(/\\([\\"$`])/g, "$1");
+  if (n.type === "concatenation") { const parts=n.namedChildren.map(literalArg); if(parts.every(x=>x!==undefined))return parts.join(""); }
 }
 function args(node: Node): Node[] {
   const name = node.childForFieldName("name");
