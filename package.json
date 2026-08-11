@@ -1,0 +1,31 @@
+{
+  "name": "pi-extensions",
+  "version": "1.0.0",
+  "type": "module",
+  "pi": {
+    "extensions": [
+      "./01-user-permissions/index.ts",
+      "./02-descriptive-footer/index.ts",
+      "./03-observational-memory/index.ts"
+    ]
+  },
+  "scripts": {
+    "analyze-history": "node --experimental-strip-types 01-user-permissions/analyze-history.mjs",
+    "render-history-report": "node 01-user-permissions/render-history-report.mjs",
+    "test": "node --experimental-strip-types --test 01-user-permissions/policy.test.mjs",
+    "typecheck": "tsc"
+  },
+  "dependencies": {
+    "@earendil-works/pi-agent-core": "^0.84.1",
+    "@earendil-works/pi-ai": "^0.84.1",
+    "@earendil-works/pi-coding-agent": "latest",
+    "@earendil-works/pi-tui": "latest",
+    "tree-sitter": "^0.25.0",
+    "tree-sitter-bash": "^0.25.0",
+    "typebox": "latest"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "typescript": "^7.0.2"
+  }
+}
