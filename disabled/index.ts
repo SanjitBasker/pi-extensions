@@ -1,8 +1,8 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
-import type { ExtensionAPI, ExtensionContext, ReadToolResultEvent, ToolResultEventResult } from "@mariozechner/pi-coding-agent";
-import { isEditToolResult, isReadToolResult, isWriteToolResult } from "@mariozechner/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { isEditToolResult, isReadToolResult, isWriteToolResult } from "@earendil-works/pi-coding-agent";
 
 type ProjectConfig = {
 	name: string;
@@ -234,7 +234,7 @@ function unsentMemoryForPaths(paths: string[], project: ActiveProject): string[]
 	return files;
 }
 
-function pathFromReadEvent(event: ReadToolResultEvent): string | undefined {
+function pathFromReadEvent(event: { input: { path?: unknown } }): string | undefined {
 	const rawPath = event.input.path;
 	return typeof rawPath === "string" ? rawPath : undefined;
 }
@@ -277,7 +277,7 @@ export default function (pi: ExtensionAPI) {
 		};
 	});
 
-	pi.on("tool_result", async (event): Promise<ToolResultEventResult | undefined> => {
+	pi.on("tool_result", async (event) => {
 		if (!activeProject || event.isError) return undefined;
 
 		let rawPath: string | undefined;

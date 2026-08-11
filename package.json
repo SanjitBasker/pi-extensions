@@ -12,7 +12,7 @@
   "scripts": {
     "analyze-history": "node --experimental-strip-types 01-user-permissions/analyze-history.mjs",
     "render-history-report": "node 01-user-permissions/render-history-report.mjs",
-    "test": "node --experimental-strip-types --test 01-user-permissions/policy.test.mjs",
+    "test": "node --experimental-strip-types --test 01-user-permissions/policy.test.mjs 02-descriptive-footer/footer.test.mjs",
     "typecheck": "tsc"
   },
   "dependencies": {

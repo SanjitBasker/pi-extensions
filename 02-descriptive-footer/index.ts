@@ -1,8 +1,9 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
 
 export function formatTokens(n:number){if(n<1_000)return `${Math.round(n)}`;if(n<10_000)return `${(n/1_000).toFixed(1)}k`;if(n<1_000_000)return `${Math.round(n/1_000)}k`;if(n<10_000_000)return `${(n/1_000_000).toFixed(1)}M`;return `${Math.round(n/1_000_000)}M`}
-export function truncate(text:string,width:number){if(width<=0)return "";if(text.length<=width)return text;if(width<=3)return text.slice(0,width);return text.slice(0,width-3)+"..."}
-export function justify(left:string,right:string,width:number){if(width<=0)return "";if(right.length+2>=width)return truncate(right,width);const room=width-right.length-2;if(left.length<=room)return left+" ".repeat(width-left.length-right.length)+right;return truncate(left,room)+"  "+right}
+export function truncate(text:string,width:number){if(width<=0)return "";return truncateToWidth(text,width,width>3?"...":"")}
+export function justify(left:string,right:string,width:number){if(width<=0)return "";const rightWidth=visibleWidth(right);if(rightWidth+2>=width)return truncate(right,width);const room=width-rightWidth-2;if(visibleWidth(left)<=room)return left+" ".repeat(width-visibleWidth(left)-rightWidth)+right;return truncate(left,room)+"  "+right}
 function sanitize(s:string){return s.replace(/[\r\n\t]/g," ").replace(/ +/g," ").trim()}
 
 export default function(pi:ExtensionAPI){
