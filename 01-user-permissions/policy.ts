@@ -186,13 +186,15 @@ function reviewed(name: string, values: string[]): boolean {
     const sub = values[i++];
     const rest = values.slice(i);
     if (sub === "branch") {
-      return rest.length === 1 && rest[0] === "--show-current";
+      return (rest.length === 1 && rest[0] === "--show-current") ||
+        (rest.length === 3 && ["-a", "--all"].includes(rest[0]) &&
+          rest[1] === "--contains" && !rest[2].startsWith("-"));
     }
     if (sub === "remote") return rest.length === 1 && rest[0] === "-v";
     if (["ls-files", "ls-tree", "merge-base", "rev-parse"].includes(sub)) {
       return true;
     }
-    return ["status", "diff", "log", "show"].includes(sub) &&
+    return ["status", "diff", "log", "show", "blame"].includes(sub) &&
       !rest.some((a) =>
         ["--output", "--ext-diff", "--textconv"].some((x) => hasEq(a, x))
       );
