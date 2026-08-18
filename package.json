@@ -6,7 +6,8 @@
     "extensions": [
       "./01-user-permissions/index.ts",
       "./02-descriptive-footer/index.ts",
-      "./03-observational-memory/index.ts"
+      "./03-observational-memory/index.ts",
+      "./04-clangd/index.ts"
     ]
   },
   "scripts": {
