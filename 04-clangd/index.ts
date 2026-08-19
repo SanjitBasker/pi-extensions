@@ -1,7 +1,7 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { existsSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { existsSync, readFileSync } from "node:fs";
+import { readFile, writeFile } from "node:fs/promises";
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { basename, relative, resolve, sep } from "node:path";
 import { homedir } from "node:os";
@@ -15,7 +15,23 @@ type LspDiagnostic = {
   code?: string | number;
 };
 type Position = { line: number; character: number };
-type Location = { uri: string; range: { start: Position; end: Position } };
+type LspRange = { start: Position; end: Position };
+type LspTextEdit = { range: LspRange; newText: string };
+type LspWorkspaceEdit = {
+  changes?: Record<string, LspTextEdit[]>;
+  documentChanges?: Array<{
+    textDocument?: { uri?: string };
+    edits?: LspTextEdit[];
+    kind?: string;
+  }>;
+};
+type LspCodeAction = {
+  title?: string;
+  kind?: string;
+  disabled?: { reason?: string };
+  edit?: LspWorkspaceEdit;
+};
+type Location = { uri: string; range: LspRange };
 type LspResponse = {
   id?: number;
   result?: unknown;
@@ -45,6 +61,31 @@ function isCppPath(path: string) {
 function cleanPath(path: string, cwd: string) {
   return resolve(cwd, path.replace(/^@/, ""));
 }
+
+function preferredClangdPath() {
+  const configPath = resolve(homedir(), ".config/pi_extensions/clangd.toml");
+  try {
+    const config = readFileSync(configPath, "utf8");
+    const match =
+      /^\s*(?:path|clangd)\s*=\s*(?:"((?:\\.|[^"])*)"|'([^']*)')\s*(?:#.*)?$/m
+        .exec(
+          config,
+        );
+    if (!match) return "clangd";
+    const configured = match[1] !== undefined
+      ? JSON.parse(`"${match[1]}"`)
+      : match[2];
+    if (!configured) return "clangd";
+    return configured === "~"
+      ? homedir()
+      : configured.startsWith("~/")
+      ? resolve(homedir(), configured.slice(2))
+      : configured;
+  } catch {
+    return "clangd";
+  }
+}
+
 async function positionFor(
   path: string,
   line: number | string,
@@ -108,6 +149,26 @@ async function positionFor(
   return { line: lineIndex, character: index };
 }
 
+async function rangeForLine(
+  path: string,
+  line: number | string,
+): Promise<LspRange> {
+  const start = await positionFor(path, line, undefined, undefined);
+  const lines = (await readFile(path, "utf8")).split(/\r?\n/);
+  return {
+    start,
+    end: { line: start.line, character: lines[start.line].length },
+  };
+}
+
+async function rangeForFile(path: string): Promise<LspRange> {
+  const lines = (await readFile(path, "utf8")).split(/\r?\n/);
+  return {
+    start: { line: 0, character: 0 },
+    end: { line: lines.length - 1, character: lines[lines.length - 1].length },
+  };
+}
+
 function severity(value: number | undefined) {
   return [
     "error",
@@ -164,7 +225,7 @@ class Clangd {
       throw new Error("clangd has been stopped for this session.");
     }
 
-    const child = spawn("clangd", [
+    const child = spawn(preferredClangdPath(), [
       `--compile-commands-dir=${this.root}`,
       "--background-index",
       "--clang-tidy",
@@ -193,6 +254,12 @@ class Clangd {
         capabilities: {
           textDocument: {
             definition: { linkSupport: true },
+            codeAction: {
+              dynamicRegistration: false,
+              codeActionLiteralSupport: {
+                codeActionKind: { valueSet: ["quickfix"] },
+              },
+            },
             publishDiagnostics: { relatedInformation: true },
           },
         },
@@ -237,6 +304,20 @@ class Clangd {
       // clangd publishes diagnostics in response to didOpen. Pull diagnostics is not
       // universally supported by older clangd versions, so use the portable protocol.
       return await published;
+    });
+  }
+
+  async quickFix(path: string, range: LspRange) {
+    await this.start();
+    const uri = pathToFileURL(path).href;
+    return this.withOpenDocument(uri, path, async () => {
+      const diagnostics = await this.waitForDiagnostics(uri);
+      const result = await this.request("textDocument/codeAction", {
+        textDocument: { uri },
+        range,
+        context: { diagnostics, only: ["quickfix"] },
+      });
+      return Array.isArray(result) ? result : [];
     });
   }
 
@@ -419,6 +500,207 @@ async function contextForLocation(location: Location, startedIn: string) {
   }
 }
 
+type OffsetEdit = LspTextEdit & { startOffset: number; endOffset: number };
+type AppliedOffsetEdit = OffsetEdit & { path: string };
+type QuickFixCandidate = { title: string; edits: AppliedOffsetEdit[] };
+
+function offsetForPosition(text: string, position: Position) {
+  if (position.line < 0 || position.character < 0) {
+    throw new Error("clangd returned a negative text edit position");
+  }
+  let lineStart = 0;
+  for (let line = 0; line < position.line; line++) {
+    const newline = text.indexOf("\n", lineStart);
+    if (newline < 0) {
+      throw new Error("clangd returned an out-of-range text edit");
+    }
+    lineStart = newline + 1;
+  }
+  const newline = text.indexOf("\n", lineStart);
+  const lineEnd = newline < 0
+    ? text.length
+    : newline > lineStart && text[newline - 1] === "\r"
+    ? newline - 1
+    : newline;
+  if (position.character > lineEnd - lineStart) {
+    throw new Error("clangd returned an out-of-range text edit");
+  }
+  // JavaScript string indexes and LSP character offsets are both UTF-16.
+  return lineStart + position.character;
+}
+
+function offsetEdits(text: string, edits: LspTextEdit[]): OffsetEdit[] {
+  const mapped = edits.map((edit) => ({
+    ...edit,
+    startOffset: offsetForPosition(text, edit.range.start),
+    endOffset: offsetForPosition(text, edit.range.end),
+  }));
+  if (mapped.some((edit) => edit.endOffset < edit.startOffset)) {
+    throw new Error("clangd returned an invalid text edit range");
+  }
+  mapped.sort((a, b) =>
+    a.startOffset - b.startOffset || a.endOffset - b.endOffset
+  );
+  for (let index = 1; index < mapped.length; index++) {
+    const previous = mapped[index - 1], current = mapped[index];
+    const sameInsertion = previous.startOffset === previous.endOffset &&
+      current.startOffset === current.endOffset &&
+      previous.startOffset === current.startOffset;
+    if (sameInsertion || current.startOffset < previous.endOffset) {
+      throw new Error("clangd returned overlapping text edits");
+    }
+  }
+  return mapped;
+}
+
+function sameEdit(a: OffsetEdit, b: OffsetEdit) {
+  return a.startOffset === b.startOffset && a.endOffset === b.endOffset &&
+    a.newText === b.newText;
+}
+
+function editsOverlap(a: OffsetEdit, b: OffsetEdit) {
+  if (sameEdit(a, b)) return false;
+  if (a.startOffset === a.endOffset && b.startOffset === b.endOffset) {
+    return a.startOffset === b.startOffset;
+  }
+  if (a.startOffset === a.endOffset) {
+    return a.startOffset > b.startOffset && a.startOffset < b.endOffset;
+  }
+  if (b.startOffset === b.endOffset) {
+    return b.startOffset > a.startOffset && b.startOffset < a.endOffset;
+  }
+  return a.startOffset < b.endOffset && b.startOffset < a.endOffset;
+}
+
+function filePathForUri(uri: string) {
+  if (!uri.startsWith("file:")) return undefined;
+  try {
+    return fileURLToPath(uri);
+  } catch {
+    return undefined;
+  }
+}
+
+function workspaceEditEntries(edit: LspWorkspaceEdit) {
+  const entries: Array<{ uri: string; edits: LspTextEdit[] }> = [];
+  for (const [uri, edits] of Object.entries(edit.changes ?? {})) {
+    if (Array.isArray(edits)) entries.push({ uri, edits });
+  }
+  for (const change of edit.documentChanges ?? []) {
+    if (change.textDocument?.uri && Array.isArray(change.edits)) {
+      entries.push({ uri: change.textDocument.uri, edits: change.edits });
+    }
+  }
+  return entries;
+}
+
+async function applyQuickFixes(actions: unknown[]) {
+  const candidates: QuickFixCandidate[] = [];
+  const skipped: string[] = [];
+  const contents = new Map<string, string>();
+
+  for (const value of actions) {
+    const action = value as LspCodeAction | undefined;
+    if (!action || typeof action !== "object") continue;
+    const title = action.title ?? "untitled clangd quick fix";
+    if (action.disabled) {
+      skipped.push(`${title} (${action.disabled.reason ?? "disabled"})`);
+      continue;
+    }
+    if (!action.edit) {
+      skipped.push(`${title} (clangd returned no workspace edit)`);
+      continue;
+    }
+
+    const edits: AppliedOffsetEdit[] = [];
+    try {
+      for (const entry of workspaceEditEntries(action.edit)) {
+        const path = filePathForUri(entry.uri);
+        if (!path) continue; // Quick fixes normally only edit file URIs.
+        let text = contents.get(path);
+        if (text === undefined) {
+          text = await readFile(path, "utf8");
+          contents.set(path, text);
+        }
+        edits.push(
+          ...offsetEdits(text, entry.edits).map((edit) => ({
+            ...edit,
+            path,
+          })),
+        );
+      }
+    } catch (error) {
+      skipped.push(
+        `${title} (${error instanceof Error ? error.message : String(error)})`,
+      );
+      continue;
+    }
+    if (!edits.length) {
+      skipped.push(`${title} (no file edits)`);
+      continue;
+    }
+    candidates.push({ title, edits });
+  }
+
+  const accepted = new Map<string, OffsetEdit[]>();
+  const appliedTitles: string[] = [];
+  for (const candidate of candidates) {
+    const byPath = new Map<string, AppliedOffsetEdit[]>();
+    for (const edit of candidate.edits) {
+      const list = byPath.get(edit.path) ?? [];
+      list.push(edit);
+      byPath.set(edit.path, list);
+    }
+    const conflict = [...byPath].some(([path, edits]) => {
+      const existing = accepted.get(path) ?? [];
+      if (
+        edits.some((edit) =>
+          existing.some((other) => editsOverlap(edit, other))
+        )
+      ) {
+        return true;
+      }
+      try {
+        offsetEdits(contents.get(path)!, edits);
+        return false;
+      } catch {
+        return true;
+      }
+    });
+    if (conflict) {
+      skipped.push(`${candidate.title} (overlaps another quick fix)`);
+      continue;
+    }
+    for (const [path, edits] of byPath) {
+      const existing = accepted.get(path) ?? [];
+      for (const edit of edits) {
+        if (!existing.some((other) => sameEdit(edit, other))) {
+          existing.push(edit);
+        }
+      }
+      accepted.set(path, existing);
+    }
+    appliedTitles.push(candidate.title);
+  }
+
+  let filesChanged = 0;
+  for (const [path, edits] of accepted) {
+    const original = contents.get(path)!;
+    const updated = [...edits].sort((a, b) => b.startOffset - a.startOffset)
+      .reduce(
+        (text, edit) =>
+          text.slice(0, edit.startOffset) + edit.newText +
+          text.slice(edit.endOffset),
+        original,
+      );
+    if (updated !== original) {
+      await writeFile(path, updated);
+      filesChanged++;
+    }
+  }
+  return { appliedTitles, skipped, filesChanged };
+}
+
 export default function (pi: ExtensionAPI) {
   let client: Clangd | undefined;
   let root: string | undefined;
@@ -514,6 +796,75 @@ export default function (pi: ExtensionAPI) {
           )).join("\n\n"),
         }],
         details: {},
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: "cpp_quickfix",
+    label: "Apply C++ Quick Fix",
+    description:
+      "Apply clangd quick fixes to a C/C++ file. Supply either a 1-based line number or unique line substring, or all=true to apply fixes for the whole file.",
+    promptSnippet: "Apply clangd quick fixes to a C/C++ file",
+    parameters: Type.Union([
+      Type.Object({
+        path: Type.String({
+          description:
+            "C/C++ file path, relative to the project root or absolute",
+        }),
+        line: Type.Union([
+          Type.Integer({
+            minimum: 1,
+            description: "1-based line number containing the diagnostic",
+          }),
+          Type.String({
+            minLength: 1,
+            description:
+              "Substring to match as a line in the source file (disambiguated if multiple lines match)",
+          }),
+        ]),
+      }),
+      Type.Object({
+        path: Type.String({
+          description:
+            "C/C++ file path, relative to the project root or absolute",
+        }),
+        all: Type.Literal(true, {
+          description: "Apply quick fixes across the whole file",
+        }),
+      }),
+    ]),
+    async execute(_id, params, _signal, _update, ctx) {
+      const path = cleanPath(params.path, ctx.cwd);
+      if (!isCppPath(path)) {
+        throw new Error(
+          "cpp_quickfix only accepts C/C++ source or header files.",
+        );
+      }
+      const range = "all" in params
+        ? await rangeForFile(path)
+        : await rangeForLine(path, params.line);
+      const actions = await getClient(ctx).quickFix(path, range);
+      const result = await applyQuickFixes(actions);
+      const location = relative(ctx.cwd, path) || path;
+      const lines: string[] = result.filesChanged
+        ? [
+          `Applied ${result.appliedTitles.length} quick fix(es) to ${location}.`,
+        ]
+        : ["No quick fixes changed the file."];
+      if (result.appliedTitles.length) {
+        lines.push(`Applied: ${result.appliedTitles.join("; ")}`);
+      }
+      if (result.skipped.length) {
+        lines.push(`Skipped: ${result.skipped.join("; ")}`);
+      }
+      return {
+        content: [{ type: "text", text: lines.join("\n") }],
+        details: {
+          filesChanged: result.filesChanged,
+          applied: result.appliedTitles,
+          skipped: result.skipped,
+        },
       };
     },
   });
