@@ -7,7 +7,9 @@
       "./01-user-permissions/index.ts",
       "./02-descriptive-footer/index.ts",
       "./03-observational-memory/index.ts",
-      "./04-clangd/index.ts"
+      "./background-terminals/index.ts",
+      "./file-search/index.ts",
+      "./subagents/index.ts"
     ]
   },
   "scripts": {
@@ -21,6 +23,8 @@
     "@earendil-works/pi-ai": "^0.84.1",
     "@earendil-works/pi-coding-agent": "latest",
     "@earendil-works/pi-tui": "latest",
+    "@effect/platform-node": "^4.0.0-beta.99",
+    "effect": "^4.0.0-beta.99",
     "tree-sitter": "^0.25.0",
     "tree-sitter-bash": "^0.25.0",
     "typebox": "latest"
