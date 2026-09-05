@@ -8,5 +8,4 @@ export default function piExtensions(pi: ExtensionAPI) {
   userPermissions(pi);
   descriptiveFooter(pi);
   observationalMemory(pi);
-  clangd(pi);
 }
