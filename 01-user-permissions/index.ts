@@ -197,6 +197,66 @@ function physical(input: string, cwd: string) {
 }
 
 export default function (pi: ExtensionAPI) {
+  const awayEntryType = "user-permissions-away";
+  const awayStatusKey = "user-permissions-away";
+  let userAway = false;
+
+  const updateAwayStatus = (ctx: any) => {
+    ctx.ui.setStatus(
+      awayStatusKey,
+      userAway ? "user away: approvals disabled" : undefined,
+    );
+  };
+
+  pi.on("session_start", (_event: any, ctx: any) => {
+    userAway = false;
+    for (const entry of ctx.sessionManager.getBranch()) {
+      if (entry.type !== "custom" || entry.customType !== awayEntryType) {
+        continue;
+      }
+      const enabled = (entry.data as { enabled?: unknown } | undefined)
+        ?.enabled;
+      if (typeof enabled === "boolean") userAway = enabled;
+    }
+    updateAwayStatus(ctx);
+  });
+
+  pi.registerCommand("user-away", {
+    description:
+      "Toggle rejection of commands needing approval (on|off|status)",
+    handler: async (args, ctx) => {
+      const action = args.trim().toLowerCase();
+      if (action === "status") {
+        ctx.ui.notify(
+          `User-away mode is ${userAway ? "on" : "off"}.`,
+          "info",
+        );
+        return;
+      }
+      if (action && action !== "on" && action !== "off") {
+        ctx.ui.notify("Usage: /user-away [on|off|status]", "warning");
+        return;
+      }
+
+      const enabled = action === "on"
+        ? true
+        : action === "off"
+        ? false
+        : !userAway;
+      if (userAway !== enabled) {
+        userAway = enabled;
+        pi.appendEntry(awayEntryType, { enabled });
+      }
+      updateAwayStatus(ctx);
+      ctx.ui.notify(
+        enabled
+          ? "User-away mode enabled; commands needing approval will be rejected."
+          : "User-away mode disabled; approval prompts are available again.",
+        "info",
+      );
+    },
+  });
+
   pi.on("tool_call", async (event: any, ctx: any) => {
     if (event.toolName === "bash") {
       const command = String(event.input?.command ?? "");
@@ -220,6 +280,21 @@ export default function (pi: ExtensionAPI) {
       if (parsed) {
         const targets = extractInPlaceTargets(parsed.root);
         if (targets && await safeEdit(targets, ctx.cwd)) return;
+      }
+      if (userAway) {
+        const reviewFile = join(
+          repoRoot(ctx.cwd),
+          ".pi",
+          "user-permissions-review.md",
+        );
+        return {
+          block: true,
+          reason:
+            "Command rejected: the user is away and cannot approve it. " +
+            "If you believe this command is read-only or should be added to " +
+            `the auto-approve list, save the exact command and a brief rationale to ${reviewFile} ` +
+            "and report it at the end of your turn.",
+        };
       }
       if (!ctx.hasUI) {
         return {
